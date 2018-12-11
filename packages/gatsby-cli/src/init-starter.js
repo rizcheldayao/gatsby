@@ -7,6 +7,7 @@ const sysPath = require(`path`)
 const report = require(`./reporter`)
 const url = require(`url`)
 const existsSync = require(`fs-exists-cached`).sync
+const semver = require(`semver`)
 
 const spawn = (cmd: string) => {
   const [file, ...args] = cmd.split(/\s+/)
@@ -27,16 +28,46 @@ const shouldUseYarn = () => {
   }
 }
 
+function checkYarnVersion() {
+  let hasMinYarnPnp = false
+  let yarnVersion = null
+  try {
+    yarnVersion = execSync(`yarnpkg --version`)
+      .toString()
+      .trim()
+    let trimmedYarnVersion = /^(.+?)[-+].+$/.exec(yarnVersion)
+    if (trimmedYarnVersion) {
+      trimmedYarnVersion = trimmedYarnVersion.pop()
+    }
+    hasMinYarnPnp = semver.gte(trimmedYarnVersion || yarnVersion, `1.12.0`)
+  } catch (err) {
+    // ignore
+  }
+  return {
+    hasMinYarnPnp: hasMinYarnPnp,
+    yarnVersion: yarnVersion,
+  }
+}
+
 // Executes `npm install` or `yarn install` in rootPath.
-const install = async rootPath => {
+const install = async (rootPath: string, usePnp: boolean) => {
   const prevDir = process.cwd()
 
   report.info(`Installing packages...`)
   process.chdir(rootPath)
-
+  const pnpCommand = usePnp ? `--enable-pnp` : ``
+  const pnpText = usePnp
+    ? `Using Plug'n'Play took`
+    : `Installing node modules took`
   try {
-    let cmd = shouldUseYarn() ? spawn(`yarnpkg`) : spawn(`npm install`)
+    const startTime = new Date().getTime()
+    let cmd = shouldUseYarn()
+      ? spawn(`yarnpkg ${pnpCommand}`)
+      : spawn(`npm install`)
     await cmd
+    const endTime = new Date().getTime()
+    const totalTime = ((endTime - startTime) / 1000).toFixed(2)
+    report.info(`${pnpText} ${totalTime} seconds`)
   } finally {
     process.chdir(prevDir)
   }
@@ -45,7 +76,7 @@ const install = async rootPath => {
 const ignored = path => !/^\.(git|hg)$/.test(sysPath.basename(path))
 
 // Copy starter from file system.
-const copy = async (starterPath: string, rootPath: string) => {
+const copy = async (starterPath: string, rootPath: string, usePnp: boolean) => {
   // Chmod with 755.
   // 493 = parseInt('755', 8)
   await fs.mkdirp(rootPath, { mode: 493 })
@@ -71,13 +102,13 @@ const copy = async (starterPath: string, rootPath: string) => {
 
   report.success(`Created starter directory layout`)
 
-  await install(rootPath)
+  await install(rootPath, usePnp)
 
   return true
 }
 
 // Clones starter from URI.
-const clone = async (hostInfo: any, rootPath: string) => {
+const clone = async (hostInfo: any, rootPath: string, usePnp: boolean) => {
   let url
   // Let people use private repos accessed over SSH.
   if (hostInfo.getDefaultRepresentation() === `sshurl`) {
@@ -97,7 +128,7 @@ const clone = async (hostInfo: any, rootPath: string) => {
 
   await fs.remove(sysPath.join(rootPath, `.git`))
 
-  await install(rootPath)
+  await install(rootPath, usePnp)
 }
 
 type InitOptions = {
@@ -107,9 +138,32 @@ type InitOptions = {
 /**
  * Main function that clones or copies the starter.
  */
-module.exports = async (starter: string, options: InitOptions = {}) => {
+module.exports = async (
+  starter: string,
+  options: InitOptions = {},
+  usePnp: boolean
+) => {
+  if (usePnp) {
+    if (!shouldUseYarn()) {
+      report.warning(`NPM does not support PnP`)
+      usePnp = false
+    } else {
+      const yarnInfo = checkYarnVersion()
+      if (!yarnInfo.hasMinYarnPnp) {
+        if (yarnInfo.yarnVersion) {
+          report.warning(
+            `You are using Yarn ${
+              yarnInfo.yarnVersion
+            } together with the --use-pnp flag, but Plug'n'Play is only supported starting from the 1.12 release.\n\n` +
+              `Please update to Yarn 1.12 or higher for a better, fully supported experience.\n`
+          )
+        }
+        // 1.11 had an issue with webpack-dev-middleware, so better not use PnP with it (never reached stable, but still)
+        usePnp = false
+      }
+    }
+  }
   const rootPath = options.rootPath || process.cwd()
-
   const urlObject = url.parse(rootPath)
   if (urlObject.protocol && urlObject.host) {
     report.panic(
@@ -124,6 +178,6 @@ module.exports = async (starter: string, options: InitOptions = {}) => {
   }
 
   const hostedInfo = hostedGitInfo.fromUrl(starter)
-  if (hostedInfo) await clone(hostedInfo, rootPath)
-  else await copy(starter, rootPath)
+  if (hostedInfo) await clone(hostedInfo, rootPath, usePnp)
+  else await copy(starter, rootPath, usePnp)
 }
