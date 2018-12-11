@@ -50,6 +50,8 @@ function checkYarnVersion() {
 }
 
 // Executes `npm install` or `yarn install` in rootPath.
+// Executes --enable-pnp if enabled
+// Tracks installation time
 const install = async (rootPath: string, usePnp: boolean) => {
   const prevDir = process.cwd()
 
@@ -144,6 +146,7 @@ module.exports = async (
   usePnp: boolean
 ) => {
   if (usePnp) {
+    // Used in create-react-app to determine what version of yarn is being used and sets usePnp to false if it's before version 1.12
     if (!shouldUseYarn()) {
       report.warning(`NPM does not support PnP`)
       usePnp = false
